@@ -153,9 +153,8 @@ class Utils {
 	 * @return {number}
 	 */
 	static convertVelocity(velocity: number): number {
-		// Max passed value limited to 100
-		velocity = velocity > 100 ? 100 : velocity;
-		return Math.round(velocity / 100 * 127);
+		// Do not convert
+		return velocity;
 	}
 
 	/**

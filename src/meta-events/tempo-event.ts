@@ -32,6 +32,19 @@ class TempoEvent implements MetaEvent {
 			Utils.numberToBytes(tempo, 3), // Tempo, 3 bytes
 		);
 	}
+
+	buildData() {
+		const tempo = Math.round(60000000 / this.bpm);
+		// Start with zero time delta
+		this.data = Utils.numberToVariableLength(this.delta).concat(
+			Constants.META_EVENT_ID,
+			this.type,
+			[0x03], // Size
+			Utils.numberToBytes(tempo, 3), // Tempo, 3 bytes
+		);
+
+		return this;
+	}
 }
 
 export {TempoEvent};

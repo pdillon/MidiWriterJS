@@ -258,9 +258,8 @@ var MidiWriter = (function () {
          * @return {number}
          */
         Utils.convertVelocity = function (velocity) {
-            // Max passed value limited to 100
-            velocity = velocity > 100 ? 100 : velocity;
-            return Math.round(velocity / 100 * 127);
+            // Do not convert
+            return velocity;
         };
         /**
          * Gets the total number of ticks of a specified duration.
@@ -626,6 +625,7 @@ var MidiWriter = (function () {
      */
     var NoteEvent = /** @class */ (function () {
         function NoteEvent(fields) {
+            var _a, _b;
             this.data = [];
             this.name = 'NoteEvent';
             this.pitch = Utils.toArray(fields.pitch);
@@ -634,7 +634,7 @@ var MidiWriter = (function () {
             this.grace = fields.grace;
             this.repeat = fields.repeat || 1;
             this.sequential = fields.sequential || false;
-            this.tick = fields.startTick || fields.tick || null;
+            this.tick = (_b = (_a = fields.startTick) !== null && _a !== void 0 ? _a : fields.tick) !== null && _b !== void 0 ? _b : null;
             this.velocity = fields.velocity || 50;
             this.wait = fields.wait || 0;
             this.tickDuration = Utils.getTickDuration(this.duration);
@@ -808,6 +808,13 @@ var MidiWriter = (function () {
             this.data = Utils.numberToVariableLength(this.delta).concat(Constants.META_EVENT_ID, this.type, [0x03], // Size
             Utils.numberToBytes(tempo, 3));
         }
+        TempoEvent.prototype.buildData = function () {
+            var tempo = Math.round(60000000 / this.bpm);
+            // Start with zero time delta
+            this.data = Utils.numberToVariableLength(this.delta).concat(Constants.META_EVENT_ID, this.type, [0x03], // Size
+            Utils.numberToBytes(tempo, 3));
+            return this;
+        };
         return TempoEvent;
     }());
 
@@ -896,22 +903,19 @@ var MidiWriter = (function () {
         Track.prototype.addEvent = function (events, mapFunction) {
             var _this = this;
             Utils.toArray(events).forEach(function (event, i) {
-                if (event instanceof NoteEvent) {
-                    // Handle map function if provided
-                    if (typeof mapFunction === 'function') {
-                        var properties = mapFunction(i, event);
-                        if (typeof properties === 'object') {
-                            Object.assign(event, properties);
-                        }
+                if (event instanceof NoteEvent && typeof mapFunction === 'function') {
+                    var properties = mapFunction(i, event);
+                    if (typeof properties === 'object') {
+                        Object.assign(event, properties);
                     }
-                    // If this note event has an explicit startTick then we need to set aside for now
-                    if (event.tick !== null) {
-                        _this.explicitTickEvents.push(event);
-                    }
-                    else {
-                        // Push each on/off event to track's event stack
-                        event.buildData().events.forEach(function (e) { return _this.events.push(e); });
-                    }
+                }
+                // If this event has an explicit startTick then we need to set aside for now
+                if (event.tick !== null) {
+                    _this.explicitTickEvents.push(event);
+                }
+                else if (event instanceof NoteEvent) {
+                    // Push each on/off event to track's event stack
+                    event.buildData().events.forEach(function (e) { return _this.events.push(e); });
                 }
                 else {
                     _this.events.push(event);
@@ -965,13 +969,22 @@ var MidiWriter = (function () {
             // Now this.explicitTickEvents is in correct order, and so is this.events naturally.
             // For each explicit tick event, splice it into the main list of events and
             // adjust the delta on the following events so they still play normally.
-            this.explicitTickEvents.forEach(function (noteEvent) {
+            this.explicitTickEvents.forEach(function (midiEvent) {
                 // Convert NoteEvent to it's respective NoteOn/NoteOff events
                 // Note that as we splice in events the delta for the NoteOff ones will
                 // Need to change based on what comes before them after the splice.
-                noteEvent.buildData().events.forEach(function (e) { return e.buildData(_this); });
-                // Merge each event individually into this track's event list.
-                noteEvent.events.forEach(function (event) { return _this.mergeSingleEvent(event); });
+                if (midiEvent instanceof NoteEvent) {
+                    midiEvent.buildData().events.forEach(function (e) { return e.buildData(_this); });
+                    // Merge each event individually into this track's event list.
+                    midiEvent.events.forEach(function (event) { return _this.mergeSingleEvent(event); });
+                }
+                else if (midiEvent instanceof TempoEvent) {
+                    _this.mergeSingleEvent(midiEvent);
+                    midiEvent.buildData();
+                }
+                else {
+                    _this.mergeSingleEvent(midiEvent);
+                }
             });
             // Hacky way to rebuild track with newly spliced events.  Need better solution.
             this.explicitTickEvents = [];
@@ -998,12 +1011,23 @@ var MidiWriter = (function () {
         Track.prototype.mergeSingleEvent = function (event) {
             // There are no events yet, so just add it in.
             if (!this.events.length) {
-                this.addEvent(event);
+                if (event.tick !== null) {
+                    this.events.push(event);
+                }
+                else {
+                    this.addEvent(event);
+                }
                 return;
             }
             // Find index of existing event we need to follow with
             var lastEventIndex;
             for (var i = 0; i < this.events.length; i++) {
+                if (this.events[i].tick === event.tick && this.events[i] instanceof TempoEvent) {
+                    // If this event is a tempo event and it falls on the same tick as the event we're trying to merge
+                    // then we need to splice it in at this point.
+                    lastEventIndex = i;
+                    break;
+                }
                 if (this.events[i].tick > event.tick)
                     break;
                 lastEventIndex = i;

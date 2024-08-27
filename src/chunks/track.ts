@@ -56,26 +56,22 @@ class Track implements Chunk {
 	 */
 	addEvent(events: (AbstractEvent|AbstractEvent[]), mapFunction?: (i: number, event: AbstractEvent) => object): Track {
 		Utils.toArray(events).forEach((event, i) => {
-			if (event instanceof NoteEvent) {
-				// Handle map function if provided
-				if (typeof mapFunction === 'function') {
-					const properties = mapFunction(i, event);
-
-					if (typeof properties === 'object') {
-						Object.assign(event, properties);
-					}
+			if (event instanceof NoteEvent && typeof mapFunction === 'function') {
+				const properties = mapFunction(i, event);
+				if (typeof properties === 'object') {
+					Object.assign(event, properties);
 				}
+			} 
+			
+			// If this event has an explicit startTick then we need to set aside for now
+			if (event.tick !== null) {
+				this.explicitTickEvents.push(event);
 
-				// If this note event has an explicit startTick then we need to set aside for now
-				if (event.tick !== null) {
-					this.explicitTickEvents.push(event);
-
-				} else {
-					// Push each on/off event to track's event stack
-					event.buildData().events.forEach((e) => this.events.push(e));
-				}
-
-			} else {
+			} else if (event instanceof NoteEvent) {
+				// Push each on/off event to track's event stack
+				event.buildData().events.forEach((e) => this.events.push(e));
+			}
+			else {
 				this.events.push(event);
 			}
 		});
@@ -133,14 +129,23 @@ class Track implements Chunk {
 		// Now this.explicitTickEvents is in correct order, and so is this.events naturally.
 		// For each explicit tick event, splice it into the main list of events and
 		// adjust the delta on the following events so they still play normally.
-		this.explicitTickEvents.forEach((noteEvent) => {
+		this.explicitTickEvents.forEach((midiEvent: NoteEvent | TempoEvent) => {
 			// Convert NoteEvent to it's respective NoteOn/NoteOff events
 			// Note that as we splice in events the delta for the NoteOff ones will
 			// Need to change based on what comes before them after the splice.
-			noteEvent.buildData().events.forEach((e) => e.buildData(this));
+			if (midiEvent instanceof NoteEvent) {
+				midiEvent.buildData().events.forEach((e) => e.buildData(this));
 
-			// Merge each event individually into this track's event list.
-			noteEvent.events.forEach((event) => this.mergeSingleEvent(event));
+				// Merge each event individually into this track's event list.
+				midiEvent.events.forEach((event) => this.mergeSingleEvent(event));
+			} else if (midiEvent instanceof TempoEvent) {
+				this.mergeSingleEvent(midiEvent);
+				midiEvent.buildData();
+			}
+			else {
+			 	this.mergeSingleEvent(midiEvent);
+			}
+			
 		});
 
 		// Hacky way to rebuild track with newly spliced events.  Need better solution.
@@ -170,7 +175,11 @@ class Track implements Chunk {
 	mergeSingleEvent(event: AbstractEvent): Track {
 		// There are no events yet, so just add it in.
 		if (!this.events.length) {
-			this.addEvent(event);
+			if (event.tick !== null) {
+				this.events.push(event);
+			} else {
+				this.addEvent(event);
+			}
 			return;
 		}
 
@@ -178,6 +187,13 @@ class Track implements Chunk {
 		let lastEventIndex;
 
 		for (let i = 0; i < this.events.length; i++) {
+			if (this.events[i].tick === event.tick && this.events[i] instanceof TempoEvent) {
+				// If this event is a tempo event and it falls on the same tick as the event we're trying to merge
+				// then we need to splice it in at this point.
+				lastEventIndex = i;
+				break;
+			}
+
 			if (this.events[i].tick > event.tick) break;
 			lastEventIndex = i;
 		}
